@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>drive.file の実機確認</title>
+<style>
+ body{font-family:-apple-system,"Hiragino Kaku Gothic ProN","Meiryo",sans-serif;
+      max-width:820px;margin:0 auto;padding:16px;line-height:1.7;color:#222}
+ h1{font-size:20px;border-bottom:3px solid #c00;padding-bottom:6px}
+ h2{font-size:16px;margin-top:28px;background:#f4f4f4;padding:6px 10px;border-left:4px solid #666}
+ label{display:block;margin-top:10px;font-weight:bold;font-size:14px}
+ input{width:100%;padding:8px;font-size:14px;box-sizing:border-box;border:1px solid #bbb;border-radius:4px}
+ button{margin:8px 8px 8px 0;padding:10px 16px;font-size:15px;cursor:pointer;
+        border:1px solid #888;border-radius:6px;background:#fff}
+ button:disabled{opacity:.4;cursor:not-allowed}
+ button.go{background:#c00;color:#fff;border-color:#c00;font-weight:bold}
+ pre{background:#111;color:#0f0;padding:12px;border-radius:6px;white-space:pre-wrap;
+     word-break:break-all;font-size:13px;min-height:60px}
+ .note{background:#fff8e1;border:1px solid #e6c200;padding:10px;border-radius:6px;font-size:14px}
+ .ok{color:#080}.ng{color:#c00;font-weight:bold}
+</style>
+</head>
+<body>
+
+<h1>drive.file の実機確認（使い捨て）</h1>
+
+<div class="note">
+<b>これは確かめるためだけのページです。</b>お客様には出しません。<br>
+確かめることは3つ。<b>①フォルダを選んだとき、中の既存ファイルが読めるか</b> ／
+<b>②当社が作ったフォルダを、あとから読めるか</b> ／ <b>③長期の鍵なしで最後まで通るか</b>。
+</div>
+
+<h2>準備：3つの値を貼る（1回だけ。この端末に保存されます）</h2>
+<label>① クライアントID（〜.apps.googleusercontent.com）</label>
+<input id="cid" placeholder="000000-xxxxxxxx.apps.googleusercontent.com">
+<label>② APIキー</label>
+<input id="key" placeholder="AIza...">
+<label>③ プロジェクト番号（数字だけ）</label>
+<input id="pid" placeholder="123456789012">
+<button onclick="save()">保存する</button>
+
+<h2>手順1：Googleにログインして許可する</h2>
+<button class="go" id="b1" onclick="login()">ログインして許可する</button>
+<div id="s1"></div>
+
+<h2>手順2：フォルダを1つ選ぶ（中に何かファイルを入れておく）</h2>
+<button id="b2" onclick="pickFolder()" disabled>フォルダを選ぶ</button>
+<div class="note">🔴 <b>選ぶ前に、そのフォルダの中に画像かPDFを2〜3個 入れておいてください。</b>
+「中の既存ファイルが読めるか」を見るためです。</div>
+
+<h2>手順3：当社が作ったフォルダを、あとから読めるか</h2>
+<button id="b3" onclick="makeFolder()" disabled>フォルダを作る</button>
+<button id="b4" onclick="readMade()" disabled>さっき作ったフォルダを読む</button>
+
+<h2>結果</h2>
+<pre id="out">（ここに出ます）</pre>
+<button onclick="copyOut()">結果をコピーする</button>
+
+<script src="https://apis.google.com/js/api.js"></script>
+<script src="https://accounts.google.com/gsi/client"></script>
+<script>
+const SCOPE='https://www.googleapis.com/auth/drive.file';
+let token=null, pickerReady=false;
+
+function $(i){return document.getElementById(i)}
+function log(s){$('out').textContent += s + "\n"}
+function clr(){$('out').textContent=''}
+
+// --- 設定の保存・読み出し ---
+['cid','key','pid','madeFolder'].forEach(k=>{
+  const v=localStorage.getItem('dft_'+k); if(v && $(k)) $(k).value=v;
+});
+function save(){
+  ['cid','key','pid'].forEach(k=>localStorage.setItem('dft_'+k,$(k).value.trim()));
+  clr(); log('保存しました。手順1へ進んでください。');
+  if(localStorage.getItem('dft_madeFolder')) $('b4').disabled=false;
+}
+if(localStorage.getItem('dft_madeFolder')) window.addEventListener('load',()=>{$('b4').disabled=false});
+
+gapi.load('picker',()=>{pickerReady=true});
+
+// --- 手順1：長期の鍵を使わないログイン（暗黙フロー） ---
+function login(){
+  clr();
+  const cid=$('cid').value.trim();
+  if(!cid){log('クライアントIDが空です。');return;}
+  const tc=google.accounts.oauth2.initTokenClient({
+    client_id:cid, scope:SCOPE,
+    callback:(r)=>{
+      if(r.error){log('✕ 失敗: '+r.error+' / '+(r.error_description||''));return;}
+      token=r.access_token;
+      log('✅ 手順1 成功。鍵を受け取りました。');
+      log('   有効期限: 約'+r.expires_in+'秒（＝'+Math.round(r.expires_in/60)+'分）');
+      log('   もらった権限: '+r.scope);
+      log('   🔴 長期の鍵（refresh_token）は含まれていません → 確かめること③ は ここで成立。');
+      $('b2').disabled=false; $('b3').disabled=false;
+    }
+  });
+  tc.requestAccessToken();
+}
+
+// --- 手順2：フォルダを選ぶ ---
+function pickFolder(){
+  if(!pickerReady){log('画面の部品がまだ読み込めていません。数秒おいて押し直してください。');return;}
+  const view=new google.picker.DocsView(google.picker.ViewId.FOLDERS)
+    .setIncludeFolders(true).setSelectFolderEnabled(true)
+    .setMimeTypes('application/vnd.google-apps.folder');
+  new google.picker.PickerBuilder()
+    .setAppId($('pid').value.trim())
+    .setOAuthToken(token)
+    .setDeveloperKey($('key').value.trim())
+    .addView(view)
+    .setCallback(onPicked)
+    .setLocale('ja')
+    .build().setVisible(true);
+}
+
+async function onPicked(d){
+  if(d.action!==google.picker.Action.PICKED) return;
+  const f=d.docs[0];
+  clr();
+  log('選んだもの: '+f.name+' ('+f.mimeType+')');
+  log('ID: '+f.id);
+  log('');
+  log('=== 🔴 確かめること① フォルダの中の既存ファイルが読めるか ===');
+  const r=await api('/drive/v3/files?q='+encodeURIComponent("'"+f.id+"' in parents and trashed=false")
+      +'&fields=files(id,name,mimeType)&pageSize=50');
+  if(r.err){log('✕ 一覧が取れません: '+r.err);}
+  else{
+    const n=(r.body.files||[]).length;
+    if(n===0){
+      log('△ 0件でした。');
+      log('  → フォルダの中に本当にファイルがあるなら、「中は見えない」ということです。');
+      log('  → 中が空だったなら、ファイルを入れてやり直してください。');
+    }else{
+      log('✅ '+n+'件 見えました：');
+      (r.body.files||[]).forEach(x=>log('   ・'+x.name));
+      log('');
+      log('=== ついでに：1件の中身まで取れるか ===');
+      const one=r.body.files[0];
+      const g=await api('/drive/v3/files/'+one.id+'?fields=id,name,size,mimeType');
+      log(g.err ? ('✕ 中身は取れません: '+g.err) : ('✅ 取れました: '+JSON.stringify(g.body)));
+    }
+  }
+}
+
+// --- 手順3 ---
+async function makeFolder(){
+  clr();
+  const r=await api('/drive/v3/files','POST',
+    {name:'エンクルー確認用_'+new Date().toISOString().slice(0,16).replace('T','_'),
+     mimeType:'application/vnd.google-apps.folder'});
+  if(r.err){log('✕ 作れません: '+r.err);return;}
+  localStorage.setItem('dft_madeFolder',r.body.id);
+  $('b4').disabled=false;
+  log('✅ 作りました: '+r.body.name);
+  log('ID: '+r.body.id);
+  log('');
+  log('🔴 ここで一度この画面を閉じ、数分あけてから開き直し、');
+  log('   もう一度 手順1（ログイン）→「さっき作ったフォルダを読む」を押してください。');
+}
+
+async function readMade(){
+  clr();
+  const id=localStorage.getItem('dft_madeFolder');
+  log('=== 🔴 確かめること② 当社が作ったフォルダを、あとから読めるか ===');
+  log('対象のID: '+id);
+  const g=await api('/drive/v3/files/'+id+'?fields=id,name');
+  if(g.err){log('✕ 読めません: '+g.err);log('  → 「毎回 選び直していただく」形になります。');}
+  else{log('✅ 読めました: '+g.body.name);log('  → 書き出し先を毎回 選んでいただく必要はありません。');}
+}
+
+// --- 共通 ---
+async function api(path,method,body){
+  if(!token) return {err:'先に手順1（ログイン）をしてください'};
+  try{
+    const o={method:method||'GET',headers:{Authorization:'Bearer '+token}};
+    if(body){o.headers['Content-Type']='application/json';o.body=JSON.stringify(body)}
+    const res=await fetch('https://www.googleapis.com'+path,o);
+    const j=await res.json();
+    if(!res.ok) return {err:res.status+' '+JSON.stringify(j.error&&j.error.message||j)};
+    return {body:j};
+  }catch(e){return {err:String(e)}}
+}
+function copyOut(){navigator.clipboard.writeText($('out').textContent).then(()=>alert('コピーしました'))}
+</script>
+</body>
+</html>
